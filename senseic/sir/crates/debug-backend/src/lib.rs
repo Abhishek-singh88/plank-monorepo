@@ -197,7 +197,13 @@ impl<'ir> Translator<'ir> {
     }
 }
 
-pub fn ir_to_bytecode(ir: &EthIRProgram, result: &mut Vec<u8>) {
+#[derive(Debug, Clone, Copy)]
+pub struct BytecodeOffsets {
+    pub runtime_start: usize,
+    pub initcode_end: usize,
+}
+
+pub fn ir_to_bytecode_with_offsets(ir: &EthIRProgram, result: &mut Vec<u8>) -> BytecodeOffsets {
     let mut translator = Translator::new(ir);
 
     translator.translating_init_code = true;
@@ -218,8 +224,17 @@ pub fn ir_to_bytecode(ir: &EthIRProgram, result: &mut Vec<u8>) {
 
     translator.asm.push_mark(translator.mark_map.initcode_end);
 
-    let _mark_to_offset = translator
+    let mark_to_offset = translator
         .asm
         .assemble(result, Some(translator.mark_map.next_mark_id.get() as usize))
         .expect("debug backend produces valid assembly");
+
+    BytecodeOffsets {
+        runtime_start: mark_to_offset[translator.mark_map.runtime_start] as usize,
+        initcode_end: mark_to_offset[translator.mark_map.initcode_end] as usize,
+    }
+}
+
+pub fn ir_to_bytecode(ir: &EthIRProgram, result: &mut Vec<u8>) {
+    let _ = ir_to_bytecode_with_offsets(ir, result);
 }

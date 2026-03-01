@@ -19,6 +19,28 @@ fn parse_optimization_passes(s: &str) -> Result<String, String> {
     Ok(s.to_string())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputSelection {
+    InitCode,
+    Runtime,
+    Both,
+}
+
+fn resolve_output_selection(
+    init_only: bool,
+    runtime_only: bool,
+) -> Result<OutputSelection, String> {
+    match (init_only, runtime_only) {
+        (true, true) => {
+            Err("conflicting flags: --init-only and --runtime-only cannot be used together"
+                .to_string())
+        }
+        (true, false) => Ok(OutputSelection::InitCode),
+        (false, true) => Ok(OutputSelection::Runtime),
+        (false, false) => Ok(OutputSelection::Both),
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "sir")]
 #[command(about = "Sensei IR to EVM bytecode compiler", long_about = None)]
@@ -27,9 +49,13 @@ struct Cli {
     /// Input file (use '-' or omit for stdin)
     input: Option<PathBuf>,
 
-    /// Compile only init function (no main)
+    /// Output only initcode (constructor), without runtime section
     #[arg(long)]
     init_only: bool,
+
+    /// Output only runtime code section
+    #[arg(long)]
+    runtime_only: bool,
 
     /// Override init function name
     #[arg(long, default_value = "init")]
@@ -66,14 +92,28 @@ fn read_input(input: Option<PathBuf>) -> String {
     }
 }
 
+fn print_hex(bytes: &[u8]) {
+    print!("0x");
+    for byte in bytes {
+        print!("{:02x}", byte);
+    }
+    println!();
+}
+
 fn main() {
     let cli = Cli::parse();
+
+    let output_selection = resolve_output_selection(cli.init_only, cli.runtime_only)
+        .unwrap_or_else(|msg| {
+            eprintln!("error: {msg}");
+            std::process::exit(2);
+        });
 
     // Read input source
     let source = read_input(cli.input);
 
     // Build emit configuration
-    let config = if cli.init_only {
+    let config = if matches!(output_selection, OutputSelection::InitCode) {
         EmitConfig::init_only_with_name(&cli.init_name)
     } else {
         EmitConfig::new(&cli.init_name, &cli.main_name)
@@ -89,12 +129,26 @@ fn main() {
     }
 
     let mut bytecode = Vec::with_capacity(0x6000);
-    sir_debug_backend::ir_to_bytecode(&program, &mut bytecode);
+    let offsets = sir_debug_backend::ir_to_bytecode_with_offsets(&program, &mut bytecode);
 
-    // Format and print output
-    print!("0x");
-    for byte in bytecode {
-        print!("{:02x}", byte);
+    let output = match output_selection {
+        OutputSelection::InitCode => &bytecode[..offsets.runtime_start],
+        OutputSelection::Runtime => &bytecode[offsets.runtime_start..offsets.initcode_end],
+        OutputSelection::Both => &bytecode[..offsets.initcode_end],
+    };
+
+    print_hex(output);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OutputSelection, resolve_output_selection};
+
+    #[test]
+    fn output_selection_all_combinations() {
+        assert_eq!(resolve_output_selection(false, false).unwrap(), OutputSelection::Both);
+        assert_eq!(resolve_output_selection(true, false).unwrap(), OutputSelection::InitCode);
+        assert_eq!(resolve_output_selection(false, true).unwrap(), OutputSelection::Runtime);
+        assert!(resolve_output_selection(true, true).is_err());
     }
-    println!();
 }
