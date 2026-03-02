@@ -28,16 +28,30 @@ enum OutputSelection {
 
 fn resolve_output_selection(
     init_only: bool,
+    initcode_only: bool,
     runtime_only: bool,
 ) -> Result<OutputSelection, String> {
-    match (init_only, runtime_only) {
-        (true, true) => {
-            Err("conflicting flags: --init-only and --runtime-only cannot be used together"
-                .to_string())
-        }
-        (true, false) => Ok(OutputSelection::InitCode),
-        (false, true) => Ok(OutputSelection::Runtime),
-        (false, false) => Ok(OutputSelection::Both),
+    if initcode_only && runtime_only {
+        return Err(
+            "conflicting flags: --initcode-only and --runtime-only cannot be used together"
+                .to_string(),
+        );
+    }
+
+    // `--init-only` compiles without a runtime entrypoint, so runtime-only output is invalid.
+    if init_only && runtime_only {
+        return Err(
+            "conflicting flags: --runtime-only cannot be used with --init-only (no runtime entrypoint)"
+                .to_string(),
+        );
+    }
+
+    if initcode_only {
+        Ok(OutputSelection::InitCode)
+    } else if runtime_only {
+        Ok(OutputSelection::Runtime)
+    } else {
+        Ok(OutputSelection::Both)
     }
 }
 
@@ -49,9 +63,13 @@ struct Cli {
     /// Input file (use '-' or omit for stdin)
     input: Option<PathBuf>,
 
-    /// Output only initcode (constructor), without runtime section
+    /// Compile only init function
     #[arg(long)]
     init_only: bool,
+
+    /// Output only initcode (constructor), without runtime section
+    #[arg(long)]
+    initcode_only: bool,
 
     /// Output only runtime code section
     #[arg(long)]
@@ -103,17 +121,18 @@ fn print_hex(bytes: &[u8]) {
 fn main() {
     let cli = Cli::parse();
 
-    let output_selection = resolve_output_selection(cli.init_only, cli.runtime_only)
-        .unwrap_or_else(|msg| {
-            eprintln!("error: {msg}");
-            std::process::exit(2);
-        });
+    let output_selection =
+        resolve_output_selection(cli.init_only, cli.initcode_only, cli.runtime_only)
+            .unwrap_or_else(|msg| {
+                eprintln!("error: {msg}");
+                std::process::exit(2);
+            });
 
     // Read input source
     let source = read_input(cli.input);
 
     // Build emit configuration
-    let config = if matches!(output_selection, OutputSelection::InitCode) {
+    let config = if cli.init_only {
         EmitConfig::init_only_with_name(&cli.init_name)
     } else {
         EmitConfig::new(&cli.init_name, &cli.main_name)
@@ -146,9 +165,14 @@ mod tests {
 
     #[test]
     fn output_selection_all_combinations() {
-        assert_eq!(resolve_output_selection(false, false).unwrap(), OutputSelection::Both);
-        assert_eq!(resolve_output_selection(true, false).unwrap(), OutputSelection::InitCode);
-        assert_eq!(resolve_output_selection(false, true).unwrap(), OutputSelection::Runtime);
-        assert!(resolve_output_selection(true, true).is_err());
+        assert_eq!(resolve_output_selection(false, false, false).unwrap(), OutputSelection::Both);
+        assert_eq!(
+            resolve_output_selection(false, true, false).unwrap(),
+            OutputSelection::InitCode
+        );
+        assert_eq!(resolve_output_selection(false, false, true).unwrap(), OutputSelection::Runtime);
+        assert_eq!(resolve_output_selection(true, false, false).unwrap(), OutputSelection::Both);
+        assert!(resolve_output_selection(false, true, true).is_err());
+        assert!(resolve_output_selection(true, false, true).is_err());
     }
 }
