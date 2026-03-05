@@ -66,10 +66,143 @@ impl EthIRProgram {
         self.next_static_alloc_id = StaticAllocId::ZERO;
     }
 }
+
+impl EthIRProgram {
+    pub fn display_raw(&self) -> String {
+        use fmt::Write;
+        let mut output = String::new();
+
+        writeln!(&mut output, "=== Entry Points ===").unwrap();
+        writeln!(&mut output, "init: @{}", self.init_entry).unwrap();
+        if let Some(main) = self.main_entry {
+            writeln!(&mut output, "main: @{main}").unwrap();
+        }
+
+        writeln!(&mut output, "\n=== Functions ({}) ===", self.functions.len()).unwrap();
+        for (id, func) in self.functions.enumerate_idx() {
+            writeln!(&mut output, "@{id}: entry=@{}, outputs={}", func.entry(), func.get_outputs())
+                .unwrap();
+        }
+
+        writeln!(&mut output, "\n=== Basic Blocks ({}) ===", self.basic_blocks.len()).unwrap();
+        for (id, bb) in self.basic_blocks.enumerate_idx() {
+            write!(
+                &mut output,
+                "@{id:>8}: ins=[{},{}), outs=[{},{}), ops=[{},{}), ",
+                bb.inputs.start,
+                bb.inputs.end,
+                bb.outputs.start,
+                bb.outputs.end,
+                bb.operations.start,
+                bb.operations.end
+            )
+            .unwrap();
+            match bb.control {
+                Control::LastOpTerminates => writeln!(&mut output, "term").unwrap(),
+                Control::InternalReturn => writeln!(&mut output, "iret").unwrap(),
+                Control::ContinuesTo(target) => writeln!(&mut output, "->@{target}").unwrap(),
+                Control::Branches(ref b) => writeln!(
+                    &mut output,
+                    "br ${} ? @{} : @{}",
+                    b.condition, b.non_zero_target, b.zero_target
+                )
+                .unwrap(),
+                Control::Switch(ref s) => {
+                    write!(&mut output, "sw ${} cases={}", s.condition, s.cases).unwrap();
+                    if let Some(fb) = s.fallback {
+                        write!(&mut output, " else=@{fb}").unwrap();
+                    }
+                    writeln!(&mut output).unwrap();
+                }
+            }
+        }
+
+        writeln!(&mut output, "\n=== Operations ({}) ===", self.operations.len()).unwrap();
+        for (id, op) in self.operations.enumerate_idx() {
+            write!(&mut output, "{id}: ").unwrap();
+            op.op_fmt(&mut output, self).unwrap();
+            let spans = op.allocated_spans(self);
+            if let Some(ins) = spans.input {
+                write!(&mut output, " [ins: {},{})", ins.start, ins.end).unwrap();
+            }
+            if let Some(outs) = spans.output {
+                write!(&mut output, " [outs: {},{})", outs.start, outs.end).unwrap();
+            }
+            writeln!(&mut output).unwrap();
+        }
+
+        writeln!(&mut output, "\n=== Locals ({}) ===", self.locals.len()).unwrap();
+        if !self.locals.is_empty() {
+            write!(&mut output, "[").unwrap();
+            for (i, local) in self.locals.iter().enumerate() {
+                if i > 0 {
+                    write!(&mut output, ", ").unwrap();
+                }
+                write!(&mut output, "${local}").unwrap();
+            }
+            writeln!(&mut output, "]").unwrap();
+        }
+
+        writeln!(&mut output, "\n=== Large Consts ({}) ===", self.large_consts.len()).unwrap();
+        for (id, val) in self.large_consts.enumerate_idx() {
+            writeln!(&mut output, "{id}: {val:#x}").unwrap();
+        }
+
+        writeln!(&mut output, "\n=== Data Segments ({}) ===", self.data_segments.len()).unwrap();
+        for (id, data) in self.data_segments.enumerate_idx() {
+            write!(&mut output, ".{id}: 0x").unwrap();
+            for &byte in data {
+                write!(&mut output, "{byte:02x}").unwrap();
+            }
+            writeln!(&mut output, " ({} bytes)", data.len()).unwrap();
+        }
+
+        writeln!(&mut output, "\n=== Cases ({}) ===", self.cases.len()).unwrap();
+        for (id, case) in self.cases.enumerate_idx() {
+            writeln!(
+                &mut output,
+                "{id}: vals=[{},{}), targets=[{},{}), count={}",
+                case.values_start_id,
+                case.values_start_id + case.cases_count,
+                case.targets_start_id,
+                case.targets_start_id + case.cases_count,
+                case.cases_count
+            )
+            .unwrap();
+        }
+
+        writeln!(&mut output, "\n=== Cases BB IDs ({}) ===", self.cases_bb_ids.len()).unwrap();
+        if !self.cases_bb_ids.is_empty() {
+            write!(&mut output, "[").unwrap();
+            for (i, bb_id) in self.cases_bb_ids.iter().enumerate() {
+                if i > 0 {
+                    write!(&mut output, ", ").unwrap();
+                }
+                write!(&mut output, "@{bb_id}").unwrap();
+            }
+            writeln!(&mut output, "]").unwrap();
+        }
+
+        writeln!(
+            &mut output,
+            "\n=== Counters ===\nnext_free_local_id: ${}\nnext_static_alloc_id: #{}",
+            self.next_free_local_id, self.next_static_alloc_id
+        )
+        .unwrap();
+
+        output
+    }
+}
+
 /// Simple display of IR program - shows all elements independently without grouping
 pub fn display_program(ir: &EthIRProgram) -> String {
     use fmt::Write;
     let mut output = String::new();
+
+    writeln!(&mut output, "Init: @{}", ir.init_entry).unwrap();
+    if let Some(run) = ir.main_entry {
+        writeln!(&mut output, "Run: @{}", run).unwrap();
+    }
 
     if !ir.functions.is_empty() {
         writeln!(&mut output, "Functions:").unwrap();
@@ -147,7 +280,7 @@ impl Function {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct BasicBlock {
     /// Input locals.
     pub inputs: Span<LocalIdx>,
@@ -326,12 +459,13 @@ mod tests {
         bb.add_operation(Operation::Add(InlineOperands { ins: [local0, local1], outs: [local2] }));
         bb.add_operation(Operation::Stop(()));
         bb.set_outputs(&[local2]);
-        let bb_id = bb.finish(Control::InternalReturn).unwrap();
+        let bb_id = bb.finish_with_internal_return().unwrap();
 
         let func_id = func.finish(bb_id);
         let program = builder.build(func_id, None);
 
         let expected = r#"
+Init: @0
 Functions:
     fn @0 -> entry @0  (outputs: 1)
 
@@ -358,14 +492,14 @@ Basic Blocks:
         let mut func0 = builder.begin_function();
         let mut bb0 = func0.begin_basic_block();
         bb0.add_operation(Operation::Stop(()));
-        let bb0_id = bb0.finish(Control::LastOpTerminates).unwrap();
+        let bb0_id = bb0.finish_terminating().unwrap();
         let func0_id = func0.finish(bb0_id);
 
         // Unreachable block 1
         let mut orphan1 = builder.begin_function();
         let mut bb1 = orphan1.begin_basic_block();
         bb1.add_operation(Operation::Invalid(()));
-        bb1.finish(Control::LastOpTerminates).unwrap();
+        bb1.finish_terminating().unwrap();
 
         // Function 1: one block with setcopy
         let mut func1 = builder.begin_function();
@@ -375,18 +509,19 @@ Basic Blocks:
         bb2.set_inputs(&[local0]);
         bb2.add_operation(Operation::SetCopy(InlineOperands { ins: [local0], outs: [local1] }));
         bb2.set_outputs(&[local1]);
-        let bb2_id = bb2.finish(Control::InternalReturn).unwrap();
+        let bb2_id = bb2.finish_with_internal_return().unwrap();
         let _func1_id = func1.finish(bb2_id);
 
         // Unreachable block 2
         let mut orphan2 = builder.begin_function();
         let mut bb3 = orphan2.begin_basic_block();
         bb3.add_operation(Operation::Stop(()));
-        bb3.finish(Control::LastOpTerminates).unwrap();
+        bb3.finish_terminating().unwrap();
 
         let program = builder.build(func0_id, None);
 
         let expected = r#"
+Init: @0
 Functions:
     fn @0 -> entry @0  (outputs: 0)
     fn @1 -> entry @2  (outputs: 1)
@@ -443,12 +578,13 @@ Basic Blocks:
             segment_id: data_segment_1,
         }));
         bb.add_operation(Operation::Stop(()));
-        let bb_id = bb.finish(Control::LastOpTerminates).unwrap();
+        let bb_id = bb.finish_terminating().unwrap();
 
         let func_id = func.finish(bb_id);
         let program = builder.build(func_id, None);
 
         let expected = r#"
+Init: @0
 Functions:
     fn @0 -> entry @0  (outputs: 0)
 

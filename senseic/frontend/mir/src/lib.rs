@@ -1,6 +1,7 @@
 pub mod display;
 
-use sensei_core::{IndexVec, list_of_lists::ListOfLists, newtype_index};
+use sensei_core::{Idx, IndexVec, Span, list_of_lists::ListOfLists, newtype_index};
+use sensei_hir::builtins::Builtin;
 use sensei_values::{BigNumId, TypeId, TypeInterner};
 
 newtype_index! {
@@ -17,16 +18,16 @@ pub enum Expr {
     Void,
     BigNum(BigNumId),
     Call { callee: FnId, args: ArgsId },
+    BuiltinCall { builtin: Builtin, args: ArgsId },
     FieldAccess { object: LocalId, field_index: u32 },
     StructLit { ty: TypeId, fields: ArgsId },
 }
 
 #[derive(Debug, Clone, Copy)]
 pub enum Instruction {
-    Set { local: LocalId, expr: Expr },
+    Set { target: LocalId, value: Expr },
     Assign { target: LocalId, value: Expr },
-    Eval(Expr),
-    Return(Expr),
+    Return(LocalId),
     If { condition: LocalId, then_block: BlockId, else_block: BlockId },
     While { condition_block: BlockId, condition: LocalId, body: BlockId },
 }
@@ -36,6 +37,12 @@ pub struct FnDef {
     pub body: BlockId,
     pub param_count: u32,
     pub return_type: TypeId,
+}
+
+impl FnDef {
+    pub fn iter_params(&self) -> impl Iterator<Item = LocalId> {
+        Span::new(LocalId::ZERO, LocalId::new(self.param_count)).iter()
+    }
 }
 
 #[derive(Debug)]

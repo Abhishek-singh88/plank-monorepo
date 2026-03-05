@@ -10,12 +10,14 @@ license = "MIT"
 [workspace.dependencies]
 # Core
 sensei-core = { path = "crates/sensei-core" }
+sensei-test-utils = { path = "crates/sensei-test-utils" }
 
 # Frontend Sub Crates
 sensei-parser = { path = "frontend/parser" }
 sensei-values = { path = "frontend/values" }
 sensei-hir = { path = "frontend/hir" }
 sensei-mir = { path = "frontend/mir" }
+sensei-mir-lower = { path = "frontend/mir-lower" }
 sensei-hir-eval = { path = "frontend/hir-eval" }
 plank-diagnostics = { path = "frontend/diagnostics" }
 

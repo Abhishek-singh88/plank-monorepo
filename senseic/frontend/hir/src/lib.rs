@@ -10,9 +10,12 @@ use sensei_parser::{
 pub use sensei_values;
 use sensei_values::TypeId;
 
+pub mod builtins;
 pub mod display;
 
 pub use sensei_values::{BigNumId, BigNumInterner};
+
+use crate::builtins::Builtin;
 
 newtype_index! {
     pub struct ConstId;
@@ -37,18 +40,10 @@ pub enum Expr {
     Type(TypeId),
     // Compound expressions
     Call { callee: LocalId, args: CallArgsId },
+    BuiltinCall { builtin: Builtin, args: CallArgsId },
     Member { object: LocalId, member: StrId },
     StructLit { ty: LocalId, fields: FieldsId },
     StructDef(StructDefId),
-}
-
-impl Expr {
-    fn has_side_effects(&self) -> bool {
-        matches!(
-            self,
-            Expr::Call { .. } | Expr::Member { .. } | Expr::StructLit { .. } | Expr::StructDef(_)
-        )
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -60,7 +55,7 @@ pub enum Instruction {
     AssertType { value: LocalId, of_type: LocalId },
     Eval(Expr),
     Return(Expr),
-    If { condition: LocalId, then_block: BlockId, else_block: BlockId },
+    If { condition: LocalId, then_block: BlockId, else_block: BlockId, result: LocalId },
     While { condition_block: BlockId, condition: LocalId, body: BlockId },
 }
 
@@ -193,7 +188,11 @@ impl<'a> BlockLowerer<'a> {
 
     fn alloc_local(&mut self, name: StrId) -> LocalId {
         if TypeId::resolve_primitive(name).is_some() {
-            todo!("diagnostic: shadowing primitive");
+            todo!("diagnostic: shadowing primitive type");
+        }
+
+        if Builtin::from_str_id(name).is_some() {
+            todo!("diagnostic: shadowing builtin");
         }
 
         let id = self.next_local_id.get_and_inc();
@@ -231,9 +230,7 @@ impl<'a> BlockLowerer<'a> {
             }
             if let Some(e) = block.end_expr() {
                 let value = lowerer.lower_expr(e);
-                if value.has_side_effects() {
-                    lowerer.emit(Instruction::Eval(value));
-                }
+                lowerer.emit(Instruction::Eval(value));
             }
         })
     }
@@ -303,6 +300,10 @@ impl<'a> BlockLowerer<'a> {
             return Expr::Type(ty);
         }
 
+        if Builtin::from_str_id(name).is_some() {
+            todo!("diagnostic: non-call reference to builtin");
+        }
+
         if let Some(local_id) = self.lookup_local(name) {
             return Expr::LocalRef(local_id);
         }
@@ -315,8 +316,7 @@ impl<'a> BlockLowerer<'a> {
             return Expr::ConstRef(const_id);
         }
 
-        // TODO: diagnostic
-        panic!("unresolved identifier")
+        todo!("diagnostic: unresolved identifier");
     }
 
     fn lower_expr(&mut self, expr: ast::Expr<'_>) -> Expr {
@@ -336,14 +336,27 @@ impl<'a> BlockLowerer<'a> {
                 Expr::Member { object, member: member_expr.member }
             }
             ast::Expr::Call(call_expr) => {
-                let callee = self.lower_expr_to_local(call_expr.callee());
-                let buf_start = self.locals_buf.len();
-                for arg in call_expr.args() {
-                    let local = self.lower_expr_to_local(arg);
-                    self.locals_buf.push(local);
+                let callee = call_expr.callee();
+                if let ast::Expr::Ident(name) = callee
+                    && let Some(builtin) = Builtin::from_str_id(name)
+                {
+                    let buf_start = self.locals_buf.len();
+                    for arg in call_expr.args() {
+                        let local = self.lower_expr_to_local(arg);
+                        self.locals_buf.push(local);
+                    }
+                    let args = self.builder.call_args.push_iter(self.locals_buf.drain(buf_start..));
+                    Expr::BuiltinCall { builtin, args }
+                } else {
+                    let callee = self.lower_expr_to_local(callee);
+                    let buf_start = self.locals_buf.len();
+                    for arg in call_expr.args() {
+                        let local = self.lower_expr_to_local(arg);
+                        self.locals_buf.push(local);
+                    }
+                    let args = self.builder.call_args.push_iter(self.locals_buf.drain(buf_start..));
+                    Expr::Call { callee, args }
                 }
-                let args = self.builder.call_args.push_iter(self.locals_buf.drain(buf_start..));
-                Expr::Call { callee, args }
             }
             ast::Expr::StructLit(struct_lit) => {
                 let ty = self.lower_expr_to_local(struct_lit.type_expr());
@@ -382,7 +395,7 @@ impl<'a> BlockLowerer<'a> {
                 let then_block = self.lower_body_to_block_with_result(if_expr.body(), result);
                 let else_block =
                     self.lower_else_chain(result, if_expr.else_if_branches(), if_expr.else_body());
-                self.emit(Instruction::If { condition, then_block, else_block });
+                self.emit(Instruction::If { condition, then_block, else_block, result });
                 Expr::LocalRef(result)
             }
             ast::Expr::ComptimeBlock(_) => {
@@ -478,7 +491,7 @@ impl<'a> BlockLowerer<'a> {
                 let condition = lowerer.lower_expr_to_local(first.condition());
                 let then_block = lowerer.lower_body_to_block_with_result(first.body(), result);
                 let else_block = lowerer.lower_else_chain(result, branches, else_body);
-                lowerer.emit(Instruction::If { condition, then_block, else_block });
+                lowerer.emit(Instruction::If { condition, then_block, else_block, result });
             })
         } else if let Some(body) = else_body {
             self.lower_body_to_block_with_result(body, result)
@@ -502,9 +515,7 @@ impl<'a> BlockLowerer<'a> {
             }
             Statement::Expr(expr) => {
                 let value = self.lower_expr(expr);
-                if value.has_side_effects() {
-                    self.emit(Instruction::Eval(value));
-                }
+                self.emit(Instruction::Eval(value));
             }
             Statement::Return(return_stmt) => {
                 let value = self.lower_expr(return_stmt.value());
@@ -645,3 +656,6 @@ pub fn lower(cst: &ConcreteSyntaxTree, big_nums: &mut BigNumInterner) -> Hir {
         run,
     }
 }
+
+#[cfg(test)]
+mod tests;

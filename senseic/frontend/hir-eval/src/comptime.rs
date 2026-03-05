@@ -110,7 +110,7 @@ impl<'e, 'hir> ComptimeInterpreter<'e, 'hir> {
                     todo!("diagnostic: assign type mismatch");
                 }
             }
-            hir::Instruction::If { condition, then_block, else_block } => {
+            hir::Instruction::If { condition, then_block, else_block, result: _ } => {
                 let cond_vid = self.bindings.get(condition);
                 match self.eval.values.lookup(cond_vid) {
                     Value::Bool(true) => self.interpret_block(then_block)?,
@@ -139,6 +139,7 @@ impl<'e, 'hir> ComptimeInterpreter<'e, 'hir> {
             hir::Expr::StructDef(struct_def_id) => self.eval_struct_def(struct_def_id)?,
             hir::Expr::StructLit { ty, fields } => self.eval_struct_lit(ty, fields)?,
             hir::Expr::Member { object, member } => self.eval_member(object, member)?,
+            hir::Expr::BuiltinCall { .. } => todo!("comptime builtin eval not yet implemented"),
         };
         Ok(value)
     }
@@ -262,6 +263,18 @@ impl<'e, 'hir> ComptimeInterpreter<'e, 'hir> {
         });
 
         self.interpret_block(fn_def.type_preamble).expect("hir: preamble with return?");
+
+        for param in params {
+            let expected_type_vid = self.bindings.get(param.r#type);
+            let Value::Type(expected_type) = self.eval.values.lookup(expected_type_vid) else {
+                todo!("diagnostic: param type must be Type")
+            };
+            let actual_arg_vid = self.bindings.get(param.value);
+            let actual_type = self.eval.values.type_of_value(actual_arg_vid);
+            if actual_type != expected_type {
+                todo!("diagnostic: comptime call argument type mismatch");
+            }
+        }
 
         let Err(ReturnValue(result)) = self.interpret_block(fn_def.body) else {
             unreachable!("function body must end with Return instruction")

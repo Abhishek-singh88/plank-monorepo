@@ -1561,8 +1561,10 @@ dependencies = [
  "alloy-primitives",
  "hashbrown 0.16.0",
  "plank-diagnostics",
+ "pretty_assertions",
  "sensei-core",
  "sensei-parser",
+ "sensei-test-utils",
  "sensei-values",
 ]
 
@@ -1572,10 +1574,12 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "hashbrown 0.16.0",
+ "pretty_assertions",
  "sensei-core",
  "sensei-hir",
  "sensei-mir",
  "sensei-parser",
+ "sensei-test-utils",
  "sensei-values",
 ]
 
@@ -1584,7 +1588,24 @@ name = "sensei-mir"
 version = "0.1.0"
 dependencies = [
  "sensei-core",
+ "sensei-hir",
  "sensei-values",
+]
+
+[[package]]
+name = "sensei-mir-lower"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "pretty_assertions",
+ "sensei-core",
+ "sensei-hir",
+ "sensei-hir-eval",
+ "sensei-mir",
+ "sensei-parser",
+ "sensei-test-utils",
+ "sensei-values",
+ "sir-data",
 ]
 
 [[package]]
@@ -1596,10 +1617,15 @@ dependencies = [
  "logos",
  "pretty_assertions",
  "sensei-core",
+ "sensei-test-utils",
  "smallvec",
  "tree-sitter",
  "tree-sitter-sensei",
 ]
+
+[[package]]
+name = "sensei-test-utils"
+version = "0.1.0"
 
 [[package]]
 name = "sensei-values"
@@ -1615,12 +1641,17 @@ dependencies = [
 name = "senseic"
 version = "0.1.0"
 dependencies = [
- "bumpalo",
  "clap",
  "sensei-hir",
  "sensei-hir-eval",
  "sensei-mir",
+ "sensei-mir-lower",
  "sensei-parser",
+ "sir-analyses",
+ "sir-data",
+ "sir-debug-backend",
+ "sir-optimizations",
+ "sir-transforms",
 ]
 
 [[package]]
