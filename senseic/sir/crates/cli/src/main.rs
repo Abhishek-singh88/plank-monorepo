@@ -1,7 +1,8 @@
-use clap::Parser;
+use clap::{ArgAction, CommandFactory, Parser, ValueEnum, error::ErrorKind};
 use sir_optimizations::Optimizer;
 use sir_parser::{EmitConfig, parse_or_panic};
 use std::{
+    collections::BTreeSet,
     fs,
     io::{self, Read},
     path::PathBuf,
@@ -26,33 +27,36 @@ enum OutputSelection {
     Both,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum OutputTarget {
+    Initcode,
+    Runtimecode,
+}
+
 fn resolve_output_selection(
     init_only: bool,
-    initcode_only: bool,
-    runtime_only: bool,
-) -> Result<OutputSelection, String> {
-    if initcode_only && runtime_only {
-        return Err(
-            "conflicting flags: --initcode-only and --runtime-only cannot be used together"
-                .to_string(),
-        );
+    output_targets: &[OutputTarget],
+) -> Result<OutputSelection, clap::Error> {
+    let selected: BTreeSet<_> = output_targets.iter().copied().collect();
+
+    if init_only && selected.contains(&OutputTarget::Runtimecode) {
+        return Err(Cli::command().error(
+            ErrorKind::ArgumentConflict,
+            "--init-only cannot be combined with --output runtimecode",
+        ));
     }
 
-    // `--init-only` compiles without a runtime entrypoint, so runtime-only output is invalid.
-    if init_only && runtime_only {
-        return Err(
-            "conflicting flags: --runtime-only cannot be used with --init-only (no runtime entrypoint)"
-                .to_string(),
-        );
-    }
+    let want_init = selected.contains(&OutputTarget::Initcode);
+    let want_runtime = selected.contains(&OutputTarget::Runtimecode);
 
-    if initcode_only {
-        Ok(OutputSelection::InitCode)
-    } else if runtime_only {
-        Ok(OutputSelection::Runtime)
-    } else {
-        Ok(OutputSelection::Both)
-    }
+    let selection = match (want_init, want_runtime) {
+        (false, false) => OutputSelection::Both,
+        (true, false) => OutputSelection::InitCode,
+        (false, true) => OutputSelection::Runtime,
+        (true, true) => OutputSelection::Both,
+    };
+
+    Ok(selection)
 }
 
 #[derive(Parser)]
@@ -67,13 +71,10 @@ struct Cli {
     #[arg(long)]
     init_only: bool,
 
-    /// Output only initcode (constructor), without runtime section
-    #[arg(long)]
-    initcode_only: bool,
-
-    /// Output only runtime code section
-    #[arg(long)]
-    runtime_only: bool,
+    /// Output selection. Repeat to combine modes, e.g.:
+    /// --output initcode --output runtimecode
+    #[arg(long = "output", value_enum, action = ArgAction::Append)]
+    output: Vec<OutputTarget>,
 
     /// Override init function name
     #[arg(long, default_value = "init")]
@@ -122,11 +123,7 @@ fn main() {
     let cli = Cli::parse();
 
     let output_selection =
-        resolve_output_selection(cli.init_only, cli.initcode_only, cli.runtime_only)
-            .unwrap_or_else(|msg| {
-                eprintln!("error: {msg}");
-                std::process::exit(2);
-            });
+        resolve_output_selection(cli.init_only, &cli.output).unwrap_or_else(|e| e.exit());
 
     // Read input source
     let source = read_input(cli.input);
@@ -161,18 +158,25 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{OutputSelection, resolve_output_selection};
+    use super::{OutputSelection, OutputTarget, resolve_output_selection};
 
     #[test]
     fn output_selection_all_combinations() {
-        assert_eq!(resolve_output_selection(false, false, false).unwrap(), OutputSelection::Both);
+        assert_eq!(resolve_output_selection(false, &[]).unwrap(), OutputSelection::Both);
         assert_eq!(
-            resolve_output_selection(false, true, false).unwrap(),
+            resolve_output_selection(false, &[OutputTarget::Initcode]).unwrap(),
             OutputSelection::InitCode
         );
-        assert_eq!(resolve_output_selection(false, false, true).unwrap(), OutputSelection::Runtime);
-        assert_eq!(resolve_output_selection(true, false, false).unwrap(), OutputSelection::Both);
-        assert!(resolve_output_selection(false, true, true).is_err());
-        assert!(resolve_output_selection(true, false, true).is_err());
+        assert_eq!(
+            resolve_output_selection(false, &[OutputTarget::Runtimecode]).unwrap(),
+            OutputSelection::Runtime
+        );
+        assert_eq!(
+            resolve_output_selection(false, &[OutputTarget::Initcode, OutputTarget::Runtimecode])
+                .unwrap(),
+            OutputSelection::Both
+        );
+        assert_eq!(resolve_output_selection(true, &[]).unwrap(), OutputSelection::Both);
+        assert!(resolve_output_selection(true, &[OutputTarget::Runtimecode]).is_err());
     }
 }
