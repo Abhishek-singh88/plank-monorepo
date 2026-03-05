@@ -7,9 +7,13 @@ license.workspace = true
 [dependencies]
 sensei-core.workspace = true
 sensei-parser.workspace = true
-sensei-types.workspace = true
+sensei-values.workspace = true
 plank-diagnostics.workspace = true
 
 hashbrown.workspace = true
 allocator-api2.workspace = true
 alloy-primitives.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+sensei-test-utils.workspace = true

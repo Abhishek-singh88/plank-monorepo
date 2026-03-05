@@ -6,6 +6,5 @@ license.workspace = true
 
 [dependencies]
 sensei-core.workspace = true
-sensei-types.workspace = true
-
-alloy-primitives.workspace = true
+sensei-hir.workspace = true
+sensei-values.workspace = true

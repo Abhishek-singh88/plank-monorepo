@@ -1,5 +1,5 @@
 use clap::{ArgAction, CommandFactory, Parser, ValueEnum, error::ErrorKind};
-use sir_optimizations::Optimizer;
+use sir_optimizations::{Optimizer, parse_passes_string};
 use sir_parser::{EmitConfig, parse_or_panic};
 use std::{
     collections::BTreeSet,
@@ -7,18 +7,6 @@ use std::{
     io::{self, Read},
     path::PathBuf,
 };
-
-fn parse_optimization_passes(s: &str) -> Result<String, String> {
-    for c in s.chars() {
-        if !matches!(c, 's' | 'c' | 'u' | 'd') {
-            return Err(format!(
-                "invalid optimization pass '{}', valid passes: s (SCCP), c (copy propagation), u (unused elimination), d (defragment)",
-                c
-            ));
-        }
-    }
-    Ok(s.to_string())
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutputSelection {
@@ -90,7 +78,7 @@ struct Cli {
     /// u = unused operation elimination,
     /// d = defragment.
     /// Example: -O csud
-    #[arg(short = 'O', long = "optimize", value_parser = parse_optimization_passes)]
+    #[arg(short = 'O', long = "optimize", value_parser = parse_passes_string)]
     optimize: Option<String>,
 }
 

@@ -147,35 +147,21 @@ impl<'a> Legalizer<'a> {
         bb: &BasicBlock,
     ) -> Result<(), LegalizerError> {
         if matches!(bb.control, Control::LastOpTerminates)
-            && self.program.operations[bb.operations].last().is_none_or(|op| {
-                !matches!(
-                    op,
-                    Operation::Return(_)
-                        | Operation::Stop(_)
-                        | Operation::Revert(_)
-                        | Operation::Invalid(_)
-                        | Operation::SelfDestruct(_)
-                )
-            })
+            && self.program.operations[bb.operations]
+                .last()
+                .is_none_or(|op| !op.kind().is_terminating())
         {
             return Err(LegalizerError::MissingTerminator(bb_id));
         }
         for op_id in bb.operations.iter() {
             let op = &self.program.operations[op_id];
-            match op {
-                Operation::Return(_)
-                | Operation::Stop(_)
-                | Operation::Revert(_)
-                | Operation::Invalid(_)
-                | Operation::SelfDestruct(_) => {
-                    if op_id != bb.operations.end - 1 {
-                        return Err(LegalizerError::TerminatorNotLast(bb_id, op_id));
-                    }
-                    if !matches!(bb.control, Control::LastOpTerminates) {
-                        return Err(LegalizerError::TerminatorControlMismatch(bb_id, op_id));
-                    }
+            if op.kind().is_terminating() {
+                if op_id != bb.operations.end - 1 {
+                    return Err(LegalizerError::TerminatorNotLast(bb_id, op_id));
                 }
-                _ => {}
+                if !matches!(bb.control, Control::LastOpTerminates) {
+                    return Err(LegalizerError::TerminatorControlMismatch(bb_id, op_id));
+                }
             }
         }
         Ok(())
@@ -509,6 +495,7 @@ impl<'a> Legalizer<'a> {
     }
 }
 
+#[derive(Debug)]
 struct TrackedSpan<I> {
     start: I,
     end: I,
@@ -519,7 +506,7 @@ fn validate_spans<I: Ord + Idx>(
     spans: &mut [TrackedSpan<I>],
     max_bound: usize,
 ) -> Result<(), LegalizerError> {
-    spans.sort_by_key(|s| s.start);
+    spans.sort_by_key(|s| (s.start, s.end));
     for window in spans.windows(2) {
         if window[0].end > window[1].start {
             return Err(LegalizerError::OverlappingSpans(window[0].source, window[1].source));
@@ -538,7 +525,7 @@ mod tests {
     use super::*;
     use alloy_primitives::U256;
     use sir_data::{
-        Branch, Control,
+        Branch, Span,
         builder::EthIRBuilder,
         operation::{
             InlineOperands, InternalCallData, SetDataOffsetData, SetLargeConstData,
@@ -637,15 +624,20 @@ mod tests {
 
     #[test]
     fn test_rejects_missing_terminator() {
-        let program = parse_without_legalization(
+        let mut program = parse_without_legalization(
             r#"
             fn init:
                 entry {
                     x = caller
+                    stop
                 }
             "#,
             EmitConfig::init_only(),
         );
+        let id = BasicBlockId::new(0);
+        let bb = &mut program.basic_blocks[id];
+        bb.operations = Span::new(bb.operations.start, bb.operations.end - 1);
+
         assert_eq!(
             legalize(&program).unwrap_err(),
             LegalizerError::MissingTerminator(BasicBlockId::new(0))
@@ -797,13 +789,11 @@ mod tests {
 
         let mut entry = func.begin_basic_block();
         entry.add_operation(Operation::Gas(InlineOperands { ins: [], outs: [cond] }));
-        let entry_id = entry
-            .finish(Control::Branches(Branch {
-                condition: cond,
-                non_zero_target: left_id,
-                zero_target: right_id,
-            }))
-            .unwrap();
+        let entry_id = entry.finish_with_branch(Branch {
+            condition: cond,
+            non_zero_target: left_id,
+            zero_target: right_id,
+        });
 
         let mut left = func.begin_basic_block();
         left.add_operation(Operation::SetSmallConst(SetSmallConstData {
@@ -811,17 +801,17 @@ mod tests {
             value: 1,
         }));
         left.set_outputs(&[out_left]);
-        left.finish(Control::ContinuesTo(merge_id)).unwrap();
+        left.finish_with_continues_to(merge_id);
 
         let mut right = func.begin_basic_block();
         right.add_operation(Operation::Noop(()));
-        right.finish(Control::ContinuesTo(merge_id)).unwrap();
+        right.finish_with_continues_to(merge_id);
 
         let merge_in = func.new_local();
         let mut merge = func.begin_basic_block();
         merge.set_inputs(&[merge_in]);
         merge.add_operation(Operation::Stop(()));
-        merge.finish(Control::LastOpTerminates).unwrap();
+        merge.finish_terminating().unwrap();
 
         let func_id = func.finish(entry_id);
         let program = builder.build(func_id, None);
@@ -840,7 +830,7 @@ mod tests {
 
         let mut bb = func.begin_basic_block();
         bb.add_operation(Operation::Noop(()));
-        let bb_id = bb.finish(Control::ContinuesTo(invalid_bb)).unwrap();
+        let bb_id = bb.finish_with_continues_to(invalid_bb);
 
         let func_id = func.finish(bb_id);
         let program = builder.build(func_id, None);
@@ -864,7 +854,7 @@ mod tests {
             outs_start: LocalIdx::new(0),
         }));
         bb.add_operation(Operation::Stop(()));
-        let bb_id = bb.finish(Control::LastOpTerminates).unwrap();
+        let bb_id = bb.finish_terminating().unwrap();
         let func_id = func.finish(bb_id);
         let program = builder.build(func_id, None);
 
@@ -919,7 +909,7 @@ mod tests {
             outs_start: LocalIdx::new(0),
         }));
         bb.add_operation(Operation::Stop(()));
-        let bb_id = bb.finish(Control::LastOpTerminates).unwrap();
+        let bb_id = bb.finish_terminating().unwrap();
         func.finish(bb_id);
 
         let program = builder.build(func_id, None);
@@ -945,7 +935,7 @@ mod tests {
             outs_start: LocalIdx::new(0),
         }));
         bb_a.add_operation(Operation::Stop(()));
-        let bb_a_id = bb_a.finish(Control::LastOpTerminates).unwrap();
+        let bb_a_id = bb_a.finish_terminating().unwrap();
         func_a.finish(bb_a_id);
 
         let mut func_b = builder.begin_function();
@@ -956,7 +946,7 @@ mod tests {
             outs_start: LocalIdx::new(0),
         }));
         bb_b.add_operation(Operation::Stop(()));
-        let bb_b_id = bb_b.finish(Control::LastOpTerminates).unwrap();
+        let bb_b_id = bb_b.finish_terminating().unwrap();
         func_b.finish(bb_b_id);
 
         let program = builder.build(func_a_id, None);
@@ -978,7 +968,7 @@ mod tests {
         bb.add_operation(Operation::SetSmallConst(SetSmallConstData { sets: local, value: 1 }));
         bb.add_operation(Operation::SetSmallConst(SetSmallConstData { sets: local, value: 2 }));
         bb.add_operation(Operation::Stop(()));
-        let bb_id = bb.finish(Control::LastOpTerminates).unwrap();
+        let bb_id = bb.finish_terminating().unwrap();
 
         let func_id = func.finish(bb_id);
         let program = builder.build(func_id, None);
@@ -1064,7 +1054,7 @@ mod tests {
         let mut bb = func.begin_basic_block();
         bb.set_inputs(&[input]);
         bb.add_operation(Operation::Stop(()));
-        let bb_id = bb.finish(Control::LastOpTerminates).unwrap();
+        let bb_id = bb.finish_terminating().unwrap();
 
         let func_id = func.finish(bb_id);
         let program = builder.build(func_id, None);
@@ -1079,7 +1069,7 @@ mod tests {
         let mut init_func = builder.begin_function();
         let mut init_bb = init_func.begin_basic_block();
         init_bb.add_operation(Operation::Stop(()));
-        let init_bb_id = init_bb.finish(Control::LastOpTerminates).unwrap();
+        let init_bb_id = init_bb.finish_terminating().unwrap();
         let init_func_id = init_func.finish(init_bb_id);
 
         let mut main_func = builder.begin_function();
@@ -1089,7 +1079,7 @@ mod tests {
         let mut main_bb = main_func.begin_basic_block();
         main_bb.set_inputs(&[input1, input2, input3]);
         main_bb.add_operation(Operation::Stop(()));
-        let main_bb_id = main_bb.finish(Control::LastOpTerminates).unwrap();
+        let main_bb_id = main_bb.finish_terminating().unwrap();
         let main_func_id = main_func.finish(main_bb_id);
 
         let program = builder.build(init_func_id, Some(main_func_id));
@@ -1105,7 +1095,7 @@ mod tests {
         let mut bb = func.begin_basic_block();
         bb.add_operation(Operation::Stop(()));
         bb.add_operation(Operation::Stop(()));
-        let bb_id = bb.finish(Control::LastOpTerminates).unwrap();
+        let bb_id = bb.finish_terminating().unwrap();
 
         let func_id = func.finish(bb_id);
         let program = builder.build(func_id, None);
@@ -1124,12 +1114,12 @@ mod tests {
         let next_bb_id = BasicBlockId::new(1);
         let mut bb = func.begin_basic_block();
         bb.add_operation(Operation::Stop(()));
-        let bb_id = bb.finish(Control::ContinuesTo(next_bb_id)).unwrap();
+        let bb_id = bb.finish_with_continues_to(next_bb_id);
 
         {
             let mut next_bb = func.begin_basic_block();
             next_bb.add_operation(Operation::Stop(()));
-            next_bb.finish(Control::LastOpTerminates).unwrap();
+            next_bb.finish_terminating().unwrap();
         }
 
         let func_id = func.finish(bb_id);
@@ -1157,7 +1147,7 @@ mod tests {
             value: invalid_id,
         }));
         bb.add_operation(Operation::Stop(()));
-        let bb_id = bb.finish(Control::LastOpTerminates).unwrap();
+        let bb_id = bb.finish_terminating().unwrap();
 
         let func_id = func.finish(bb_id);
         let program = builder.build(func_id, None);
@@ -1184,7 +1174,7 @@ mod tests {
             segment_id: invalid_id,
         }));
         bb.add_operation(Operation::Stop(()));
-        let bb_id = bb.finish(Control::LastOpTerminates).unwrap();
+        let bb_id = bb.finish_terminating().unwrap();
 
         let func_id = func.finish(bb_id);
         let program = builder.build(func_id, None);
@@ -1206,7 +1196,7 @@ mod tests {
             alloc_id: invalid_id,
         }));
         bb.add_operation(Operation::Stop(()));
-        let bb_id = bb.finish(Control::LastOpTerminates).unwrap();
+        let bb_id = bb.finish_terminating().unwrap();
 
         let func_id = func.finish(bb_id);
         let program = builder.build(func_id, None);
@@ -1229,7 +1219,7 @@ mod tests {
             value: 1,
         }));
         bb.add_operation(Operation::Stop(()));
-        let bb_id = bb.finish(Control::LastOpTerminates).unwrap();
+        let bb_id = bb.finish_terminating().unwrap();
 
         let func_id = func.finish(bb_id);
         let program = builder.build(func_id, None);
@@ -1244,7 +1234,7 @@ mod tests {
         let mut func_a = builder.begin_function();
         let mut bb_shared = func_a.begin_basic_block();
         bb_shared.add_operation(Operation::Stop(()));
-        let bb_shared_id = bb_shared.finish(Control::LastOpTerminates).unwrap();
+        let bb_shared_id = bb_shared.finish_terminating().unwrap();
         let func_a_id = func_a.finish(bb_shared_id);
 
         let mut program = builder.build(func_a_id, None);
@@ -1267,13 +1257,13 @@ mod tests {
         let mut bb1 = func.begin_basic_block();
         bb1.add_operation(Operation::SetSmallConst(SetSmallConstData { sets: local, value: 1 }));
         bb1.set_outputs(&[local]);
-        let bb1_id = bb1.finish(Control::ContinuesTo(BasicBlockId::new(1))).unwrap();
+        let bb1_id = bb1.finish_with_continues_to(BasicBlockId::new(1));
 
         let in2 = func.new_local();
         let mut bb2 = func.begin_basic_block();
         bb2.set_inputs(&[in2]);
         bb2.add_operation(Operation::Stop(()));
-        bb2.finish(Control::LastOpTerminates).unwrap();
+        bb2.finish_terminating().unwrap();
 
         let func_id = func.finish(bb1_id);
         let mut program = builder.build(func_id, None);
@@ -1297,11 +1287,11 @@ mod tests {
 
         let mut bb1 = func.begin_basic_block();
         bb1.add_operation(Operation::Stop(()));
-        let bb1_id = bb1.finish(Control::LastOpTerminates).unwrap();
+        let bb1_id = bb1.finish_terminating().unwrap();
 
         let mut bb2 = func.begin_basic_block();
         bb2.add_operation(Operation::Stop(()));
-        bb2.finish(Control::LastOpTerminates).unwrap();
+        bb2.finish_terminating().unwrap();
 
         let func_id = func.finish(bb1_id);
         let mut program = builder.build(func_id, None);
@@ -1328,7 +1318,7 @@ mod tests {
         let mut bb = func.begin_basic_block();
         bb.add_operation(Operation::SetSmallConst(SetSmallConstData { sets: out_local, value: 1 }));
         bb.set_outputs(&[out_local]);
-        let bb_id = bb.finish(Control::InternalReturn).unwrap();
+        let bb_id = bb.finish_with_internal_return().unwrap();
 
         let func_id = func.finish(bb_id);
         let mut program = builder.build(func_id, None);

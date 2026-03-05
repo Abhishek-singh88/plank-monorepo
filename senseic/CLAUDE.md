@@ -7,7 +7,7 @@ Senseic is a compiler frontend for the Sensei programming language.
 ```bash
 cargo test -p <crate name> # Run during work on a specific crate for validation
 
-# Run formatter & linter at the end of a task
+# Run formatter & linter (clippy) at the end of tasks
 just check
 
 # Run all rust tests
@@ -41,6 +41,11 @@ Cargo workspace with general-purpose crates in `crates/` and frontend crates in 
 
 ## Coding Style
 
+### Code QA
+
+All issues raised by the `code-qa` agent MUST BE ADDRESSED, any
+issues that are not fixed must be listed with an explanation in the completion summary.
+
 ### Comments
 Do NOT add inline comments that describe *what* the code does
 (e.g., "// Parse next element"). The code should be self-documenting.
@@ -60,6 +65,12 @@ Only add comments for non-obvious *why* decisions.
 Where heap allocations cannot be avoided you MUST ENSURE that the algorithms or
 functions you write at a high-level only make a constant number of allocations
 relative to the input size.
+
+This means methods such as `.collect`, `.to_vec`, etc. are **ANTI-PATTERNS** to
+be avoided. If there are borrow checker conflicts first try:
+- adapting functions to take specific fields rather than the entirety of `self`
+- defining a reusable heap-allocated before instead of ones that are allocated &
+  then freed on each call
 
 ### Warnings
 

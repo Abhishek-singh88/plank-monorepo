@@ -1,13 +1,14 @@
-use alloy_primitives::U256;
-use sensei_core::{IndexVec, list_of_lists::ListOfLists, newtype_index};
-use sensei_types::{TypeId, TypeInterner};
+pub mod display;
+
+use sensei_core::{Idx, IndexVec, Span, list_of_lists::ListOfLists, newtype_index};
+use sensei_hir::builtins::Builtin;
+use sensei_values::{BigNumId, TypeId, TypeInterner};
 
 newtype_index! {
     pub struct FnId;
     pub struct BlockId;
     pub struct LocalId;
     pub struct ArgsId;
-    pub struct BigNumId;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -17,18 +18,18 @@ pub enum Expr {
     Void,
     BigNum(BigNumId),
     Call { callee: FnId, args: ArgsId },
+    BuiltinCall { builtin: Builtin, args: ArgsId },
     FieldAccess { object: LocalId, field_index: u32 },
     StructLit { ty: TypeId, fields: ArgsId },
 }
 
 #[derive(Debug, Clone, Copy)]
 pub enum Instruction {
-    Set { local: LocalId, expr: Expr },
+    Set { target: LocalId, value: Expr },
     Assign { target: LocalId, value: Expr },
-    Eval(Expr),
-    Return(Expr),
+    Return(LocalId),
     If { condition: LocalId, then_block: BlockId, else_block: BlockId },
-    While { condition_block: BlockId, body: BlockId },
+    While { condition_block: BlockId, condition: LocalId, body: BlockId },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -38,14 +39,19 @@ pub struct FnDef {
     pub return_type: TypeId,
 }
 
+impl FnDef {
+    pub fn iter_params(&self) -> impl Iterator<Item = LocalId> {
+        Span::new(LocalId::ZERO, LocalId::new(self.param_count)).iter()
+    }
+}
+
 #[derive(Debug)]
 pub struct Mir {
     pub blocks: ListOfLists<BlockId, Instruction>,
     pub args: ListOfLists<ArgsId, LocalId>,
-    pub big_nums: IndexVec<BigNumId, U256>,
     pub fns: IndexVec<FnId, FnDef>,
-    pub fn_locals: ListOfLists<FnId, Option<TypeId>>,
+    pub fn_locals: ListOfLists<FnId, TypeId>,
     pub types: TypeInterner,
-    pub init: BlockId,
-    pub run: Option<BlockId>,
+    pub init: FnId,
+    pub run: Option<FnId>,
 }
