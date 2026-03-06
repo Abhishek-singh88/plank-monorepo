@@ -38,7 +38,7 @@ fn resolve_output_selection(
     let want_runtime = selected.contains(&OutputTarget::Runtimecode);
 
     let selection = match (want_init, want_runtime) {
-        (false, false) => OutputSelection::Both,
+        (false, false) => OutputSelection::InitCode,
         (true, false) => OutputSelection::InitCode,
         (false, true) => OutputSelection::Runtime,
         (true, true) => OutputSelection::Both,
@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn output_selection_all_combinations() {
-        assert_eq!(resolve_output_selection(false, &[]).unwrap(), OutputSelection::Both);
+        assert_eq!(resolve_output_selection(false, &[]).unwrap(), OutputSelection::InitCode);
         assert_eq!(
             resolve_output_selection(false, &[OutputTarget::Initcode]).unwrap(),
             OutputSelection::InitCode
@@ -176,7 +176,7 @@ mod tests {
                 .unwrap(),
             OutputSelection::Both
         );
-        assert_eq!(resolve_output_selection(true, &[]).unwrap(), OutputSelection::Both);
+        assert_eq!(resolve_output_selection(true, &[]).unwrap(), OutputSelection::InitCode);
         assert!(resolve_output_selection(true, &[OutputTarget::Runtimecode]).is_err());
     }
 }
