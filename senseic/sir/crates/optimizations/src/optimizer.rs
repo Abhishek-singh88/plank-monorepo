@@ -37,6 +37,18 @@ mod with_analysis {
     }
 }
 
+pub fn parse_passes_string(s: &str) -> Result<String, String> {
+    for c in s.chars() {
+        if !matches!(c, 's' | 'c' | 'u' | 'd') {
+            return Err(format!(
+                "invalid optimization pass '{}', valid passes: s (SCCP), c (copy propagation), u (unused elimination), d (defragment)",
+                c
+            ));
+        }
+    }
+    Ok(s.to_string())
+}
+
 pub struct Optimizer {
     src: EthIRProgram,
     dst: Option<EthIRProgram>,
@@ -168,6 +180,7 @@ mod tests {
     #[test]
     fn test_csud() {
         let expected = r#"
+Init: @0
 Functions:
     fn @0 -> entry @0  (outputs: 0)
 
@@ -188,6 +201,7 @@ Basic Blocks:
     #[test]
     fn test_cusd() {
         let expected = r#"
+Init: @0
 Functions:
     fn @0 -> entry @0  (outputs: 0)
 
@@ -209,6 +223,7 @@ Basic Blocks:
     #[test]
     fn test_ucsd() {
         let expected = r#"
+Init: @0
 Functions:
     fn @0 -> entry @0  (outputs: 0)
 
@@ -231,6 +246,7 @@ Basic Blocks:
     #[test]
     fn test_uscd() {
         let expected = r#"
+Init: @0
 Functions:
     fn @0 -> entry @0  (outputs: 0)
 
@@ -262,6 +278,7 @@ Basic Blocks:
     #[test]
     fn test_scsud() {
         let expected = r#"
+Init: @0
 Functions:
     fn @0 -> entry @0  (outputs: 0)
 

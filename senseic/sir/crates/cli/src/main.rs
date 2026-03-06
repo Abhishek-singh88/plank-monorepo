@@ -1,23 +1,12 @@
-use clap::Parser;
-use sir_optimizations::Optimizer;
+use clap::{ArgAction, CommandFactory, Parser, ValueEnum, error::ErrorKind};
+use sir_optimizations::{Optimizer, parse_passes_string};
 use sir_parser::{EmitConfig, parse_or_panic};
 use std::{
+    collections::BTreeSet,
     fs,
     io::{self, Read},
     path::PathBuf,
 };
-
-fn parse_optimization_passes(s: &str) -> Result<String, String> {
-    for c in s.chars() {
-        if !matches!(c, 's' | 'c' | 'u' | 'd') {
-            return Err(format!(
-                "invalid optimization pass '{}', valid passes: s (SCCP), c (copy propagation), u (unused elimination), d (defragment)",
-                c
-            ));
-        }
-    }
-    Ok(s.to_string())
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutputSelection {
@@ -26,19 +15,36 @@ enum OutputSelection {
     Both,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum OutputTarget {
+    Initcode,
+    Runtimecode,
+}
+
 fn resolve_output_selection(
     init_only: bool,
-    runtime_only: bool,
-) -> Result<OutputSelection, String> {
-    match (init_only, runtime_only) {
-        (true, true) => {
-            Err("conflicting flags: --init-only and --runtime-only cannot be used together"
-                .to_string())
-        }
-        (true, false) => Ok(OutputSelection::InitCode),
-        (false, true) => Ok(OutputSelection::Runtime),
-        (false, false) => Ok(OutputSelection::Both),
+    output_targets: &[OutputTarget],
+) -> Result<OutputSelection, clap::Error> {
+    let selected: BTreeSet<_> = output_targets.iter().copied().collect();
+
+    if init_only && selected.contains(&OutputTarget::Runtimecode) {
+        return Err(Cli::command().error(
+            ErrorKind::ArgumentConflict,
+            "--init-only cannot be combined with --output runtimecode",
+        ));
     }
+
+    let want_init = selected.contains(&OutputTarget::Initcode);
+    let want_runtime = selected.contains(&OutputTarget::Runtimecode);
+
+    let selection = match (want_init, want_runtime) {
+        (false, false) => OutputSelection::Both,
+        (true, false) => OutputSelection::InitCode,
+        (false, true) => OutputSelection::Runtime,
+        (true, true) => OutputSelection::Both,
+    };
+
+    Ok(selection)
 }
 
 #[derive(Parser)]
@@ -49,13 +55,14 @@ struct Cli {
     /// Input file (use '-' or omit for stdin)
     input: Option<PathBuf>,
 
-    /// Output only initcode (constructor), without runtime section
+    /// Compile only init function
     #[arg(long)]
     init_only: bool,
 
-    /// Output only runtime code section
-    #[arg(long)]
-    runtime_only: bool,
+    /// Output selection. Repeat to combine modes, e.g.:
+    /// --output initcode --output runtimecode
+    #[arg(long = "output", value_enum, action = ArgAction::Append)]
+    output: Vec<OutputTarget>,
 
     /// Override init function name
     #[arg(long, default_value = "init")]
@@ -71,7 +78,7 @@ struct Cli {
     /// u = unused operation elimination,
     /// d = defragment.
     /// Example: -O csud
-    #[arg(short = 'O', long = "optimize", value_parser = parse_optimization_passes)]
+    #[arg(short = 'O', long = "optimize", value_parser = parse_passes_string)]
     optimize: Option<String>,
 }
 
@@ -100,20 +107,31 @@ fn print_hex(bytes: &[u8]) {
     println!();
 }
 
+fn print_named_hex(name: &str, bytes: &[u8]) {
+    print!("{name}: 0x");
+    for byte in bytes {
+        print!("{:02x}", byte);
+    }
+    println!();
+}
+
+fn print_empty_warning(name: &str, bytes: &[u8]) {
+    if bytes.is_empty() {
+        println!("warning: {name} output is empty");
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
 
-    let output_selection = resolve_output_selection(cli.init_only, cli.runtime_only)
-        .unwrap_or_else(|msg| {
-            eprintln!("error: {msg}");
-            std::process::exit(2);
-        });
+    let output_selection =
+        resolve_output_selection(cli.init_only, &cli.output).unwrap_or_else(|e| e.exit());
 
     // Read input source
     let source = read_input(cli.input);
 
     // Build emit configuration
-    let config = if matches!(output_selection, OutputSelection::InitCode) {
+    let config = if cli.init_only {
         EmitConfig::init_only_with_name(&cli.init_name)
     } else {
         EmitConfig::new(&cli.init_name, &cli.main_name)
@@ -131,24 +149,48 @@ fn main() {
     let mut bytecode = Vec::with_capacity(0x6000);
     let offsets = sir_debug_backend::ir_to_bytecode_with_offsets(&program, &mut bytecode);
 
-    let output = match output_selection {
-        OutputSelection::InitCode => &bytecode[..offsets.runtime_start],
-        OutputSelection::Runtime => &bytecode[offsets.runtime_start..offsets.initcode_end],
-        OutputSelection::Both => &bytecode[..offsets.initcode_end],
-    };
+    let initcode = &bytecode[..offsets.initcode_end];
+    let runtimecode = &bytecode[offsets.runtime_start..offsets.initcode_end];
 
-    print_hex(output);
+    match output_selection {
+        OutputSelection::InitCode => {
+            print_empty_warning("initcode", initcode);
+            print_hex(initcode);
+        }
+        OutputSelection::Runtime => {
+            print_empty_warning("runtimecode", runtimecode);
+            print_hex(runtimecode);
+        }
+        OutputSelection::Both => {
+            print_empty_warning("initcode", initcode);
+            print_empty_warning("runtimecode", runtimecode);
+            print_named_hex("initcode", initcode);
+            print_named_hex("runtimecode", runtimecode);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{OutputSelection, resolve_output_selection};
+    use super::{OutputSelection, OutputTarget, resolve_output_selection};
 
     #[test]
     fn output_selection_all_combinations() {
-        assert_eq!(resolve_output_selection(false, false).unwrap(), OutputSelection::Both);
-        assert_eq!(resolve_output_selection(true, false).unwrap(), OutputSelection::InitCode);
-        assert_eq!(resolve_output_selection(false, true).unwrap(), OutputSelection::Runtime);
-        assert!(resolve_output_selection(true, true).is_err());
+        assert_eq!(resolve_output_selection(false, &[]).unwrap(), OutputSelection::Both);
+        assert_eq!(
+            resolve_output_selection(false, &[OutputTarget::Initcode]).unwrap(),
+            OutputSelection::InitCode
+        );
+        assert_eq!(
+            resolve_output_selection(false, &[OutputTarget::Runtimecode]).unwrap(),
+            OutputSelection::Runtime
+        );
+        assert_eq!(
+            resolve_output_selection(false, &[OutputTarget::Initcode, OutputTarget::Runtimecode])
+                .unwrap(),
+            OutputSelection::Both
+        );
+        assert_eq!(resolve_output_selection(true, &[]).unwrap(), OutputSelection::Both);
+        assert!(resolve_output_selection(true, &[OutputTarget::Runtimecode]).is_err());
     }
 }
