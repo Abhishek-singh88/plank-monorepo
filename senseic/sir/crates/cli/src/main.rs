@@ -38,7 +38,7 @@ fn resolve_output_selection(
     let want_runtime = selected.contains(&OutputTarget::Runtimecode);
 
     let selection = match (want_init, want_runtime) {
-        (false, false) => OutputSelection::InitCode,
+        (false, false) => OutputSelection::Both,
         (true, false) => OutputSelection::InitCode,
         (false, true) => OutputSelection::Runtime,
         (true, true) => OutputSelection::Both,
@@ -115,6 +115,12 @@ fn print_named_hex(name: &str, bytes: &[u8]) {
     println!();
 }
 
+fn print_empty_warning(name: &str, bytes: &[u8]) {
+    if bytes.is_empty() {
+        println!("warning: {name} output is empty");
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -147,9 +153,17 @@ fn main() {
     let runtimecode = &bytecode[offsets.runtime_start..offsets.initcode_end];
 
     match output_selection {
-        OutputSelection::InitCode => print_hex(initcode),
-        OutputSelection::Runtime => print_hex(runtimecode),
+        OutputSelection::InitCode => {
+            print_empty_warning("initcode", initcode);
+            print_hex(initcode);
+        }
+        OutputSelection::Runtime => {
+            print_empty_warning("runtimecode", runtimecode);
+            print_hex(runtimecode);
+        }
         OutputSelection::Both => {
+            print_empty_warning("initcode", initcode);
+            print_empty_warning("runtimecode", runtimecode);
             print_named_hex("initcode", initcode);
             print_named_hex("runtimecode", runtimecode);
         }
@@ -162,7 +176,7 @@ mod tests {
 
     #[test]
     fn output_selection_all_combinations() {
-        assert_eq!(resolve_output_selection(false, &[]).unwrap(), OutputSelection::InitCode);
+        assert_eq!(resolve_output_selection(false, &[]).unwrap(), OutputSelection::Both);
         assert_eq!(
             resolve_output_selection(false, &[OutputTarget::Initcode]).unwrap(),
             OutputSelection::InitCode
@@ -176,7 +190,7 @@ mod tests {
                 .unwrap(),
             OutputSelection::Both
         );
-        assert_eq!(resolve_output_selection(true, &[]).unwrap(), OutputSelection::InitCode);
+        assert_eq!(resolve_output_selection(true, &[]).unwrap(), OutputSelection::Both);
         assert!(resolve_output_selection(true, &[OutputTarget::Runtimecode]).is_err());
     }
 }
