@@ -23,7 +23,7 @@ abstract contract BaseTest is Test {
         string[] memory sirArgs =
             abi.decode(bytes.concat(bytes32(uint256(0x20)), bytes32(totalArgs), encodedSirArgs), (string[]));
         string[] memory args = new string[](7 + sirArgs.length);
-        string[7] memory runSir = ["cargo", "run", "-p", "sir-cli", "--output", "initcode", "--"];
+        string[7] memory runSir = ["cargo", "run", "-p", "sir-cli", "--", "--output", "initcode"];
         for (uint256 i = 0; i < runSir.length; i++) {
             args[i] = runSir[i];
         }
