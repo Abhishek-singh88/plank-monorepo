@@ -107,6 +107,14 @@ fn print_hex(bytes: &[u8]) {
     println!();
 }
 
+fn print_named_hex(name: &str, bytes: &[u8]) {
+    print!("{name}: 0x");
+    for byte in bytes {
+        print!("{:02x}", byte);
+    }
+    println!();
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -135,13 +143,17 @@ fn main() {
     let mut bytecode = Vec::with_capacity(0x6000);
     let offsets = sir_debug_backend::ir_to_bytecode_with_offsets(&program, &mut bytecode);
 
-    let output = match output_selection {
-        OutputSelection::InitCode => &bytecode[..offsets.runtime_start],
-        OutputSelection::Runtime => &bytecode[offsets.runtime_start..offsets.initcode_end],
-        OutputSelection::Both => &bytecode[..offsets.initcode_end],
-    };
+    let initcode = &bytecode[..offsets.initcode_end];
+    let runtimecode = &bytecode[offsets.runtime_start..offsets.initcode_end];
 
-    print_hex(output);
+    match output_selection {
+        OutputSelection::InitCode => print_hex(initcode),
+        OutputSelection::Runtime => print_hex(runtimecode),
+        OutputSelection::Both => {
+            print_named_hex("initcode", initcode);
+            print_named_hex("runtimecode", runtimecode);
+        }
+    }
 }
 
 #[cfg(test)]
